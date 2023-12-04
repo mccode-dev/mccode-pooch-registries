@@ -1,0 +1,32 @@
+name: 'Register files'
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
+  cancel-in-progress: true
+
+jobs:
+  register-files:
+    runs-on: 'ubuntu-latest'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone McStasMcXtrace/McCode
+        uses: actions/checkout@v4
+        with:
+          repository: McStasMcXtrace/McCode
+          path: mccode
+          fetch-tags: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: (Re)generate registry files
+        run: python make_registry_files.py
