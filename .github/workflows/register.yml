@@ -28,5 +28,8 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
       - name: (Re)generate registry files
         run: python make_registry_files.py
