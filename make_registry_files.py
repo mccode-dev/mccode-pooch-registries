@@ -1,7 +1,4 @@
-
-
 def make_registry(base, dirs, output, recursive=True):
-    from pathlib import Path
     from pooch import file_hash
     pat = '**/*' if recursive else '*'
     hashes = {p.relative_to(base).as_posix(): file_hash(str(p)) for d in dirs for p in base.joinpath(d).glob(pat) if p.is_file()}
@@ -11,17 +8,49 @@ def make_registry(base, dirs, output, recursive=True):
             outfile.write(f'{name} {hashes[name]}\n')
 
 
-def one_tag(base):
+def make_registries(repo, base, message):
     registries = {
         'mcstas': ('mcstas-comps',),
         'mcxtrace': ('mcxtrace-comps',),
         'libc': ('common/lib/share', 'mcstas/nlib', 'mxctrace/xlib'),
     }
     for name, dirs in registries.items():
-        make_registry(base, dirs, f'{name}-registry.txt')
+        registry_name = f'{name}-registry.txt'
+        make_registry(base, dirs, registry_name)
+        repo.git.add(registry_name)
+    repo.index.commit(message)
 
 
-def all_tags():
+def one_tag(repo, base, mccode, tag):
+    mccode.git.checkout(tag)
+    message = f'Add {tag} registries'
+    make_registries(repo, base, message)
+    repo.git.tag(tag, message=message)
+
+
+def one_branch(repo, base, mccode, name, push: bool):
+    if name not in mccode.branches:
+        return
+    mccode_current = mccode.active_branch
+    mccode.git.checkout(name)
+
+    repo_current = repo.active_branch
+    if name in repo.branches:
+        repo.git.checkout(name)
+    else:
+        repo.git.checkout('-b', name)
+        repo.git.branch('-u', 'origin', name)
+
+    make_registries(repo, base, f'Add {name} branch registries')
+
+    if push:
+        repo.remote('origin').push()
+
+    mccode.git.checkout(mccode_current.name)
+    repo.git.checkout(repo_current.name)
+
+
+def do_everything(push: bool):
     from pathlib import Path
     import git
     repo = git.Repo(Path(__file__).parent, search_parent_directories=False)
@@ -31,16 +60,20 @@ def all_tags():
     tags = [tag for tag in repo.tags if str(tag).startswith('v')]
     missing = [tag for tag in mccode.tags if str(tag).startswith('v') and tag not in tags]
     for tag in missing:
-        mccode.git.checkout(tag)
-        one_tag(mccode_dir)
-        repo.git.add('mcstas-registry.txt')
-        repo.git.add('mcxtrace-registry.txt')
-        repo.git.add('libc-registry.txt')
-        repo.index.commit(f'Add {tag} registries')
-        repo.git.tag(tag, message=f'Add {tag} registries')
+        one_tag(repo, mccode_dir, mccode, tag)
 
-    repo.remote('origin').push(tags=True)
+    # Also track special branches:
+    for branch in ("main",):
+        one_branch(repo, mccode_dir, mccode, branch, push=push)
+
+    if push:
+        repo.remote('origin').push(tags=True)
 
 
 if __name__ == '__main__':
-    all_tags()
+    from argparse import ArgumentParser
+    parser = ArgumentParser('make_registry_files')
+    parser.add_argument('-n', '--no-push', action='store_true', default=False)
+    args = parser.parse_args()
+
+    do_everything(push=not args.no_push)
