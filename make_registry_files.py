@@ -28,7 +28,8 @@ def one_tag(repo, base, mccode, tag):
     mccode.git.checkout(tag)
     message = f'Add {tag} registries'
     make_registries(repo, base, message)
-    repo.git.tag(tag, message=message)
+    # repo.git.tag(tag, message=message)
+    repo.create_tag(tag, message=message)
 
     mccode.git.checkout(mccode_current.name)
     repo.git.checkout(repo_current.name)
