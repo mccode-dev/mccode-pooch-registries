@@ -22,10 +22,16 @@ def make_registries(repo, base, message):
 
 
 def one_tag(repo, base, mccode, tag):
+    mccode_current = mccode.active_branch
+    repo_current = repo.active_branch
+
     mccode.git.checkout(tag)
     message = f'Add {tag} registries'
     make_registries(repo, base, message)
     repo.git.tag(tag, message=message)
+
+    mccode.git.checkout(mccode_current.name)
+    repo.git.checkout(repo_current.name)
 
 
 def one_branch(repo, base, mccode, name, push: bool):
@@ -60,6 +66,7 @@ def do_everything(push: bool):
     tags = [tag for tag in repo.tags if str(tag).startswith('v')]
     missing = [tag for tag in mccode.tags if str(tag).startswith('v') and tag not in tags]
     for tag in missing:
+        print(f'handle missing tag {tag}')
         one_tag(repo, mccode_dir, mccode, tag)
 
     # Also track special branches:
