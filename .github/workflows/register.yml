@@ -25,6 +25,7 @@ jobs:
         with:
           repository: McStasMcXtrace/McCode
           path: mccode
+          fetch-depth: 0
           fetch-tags: true
 
       - name: Setup Python
