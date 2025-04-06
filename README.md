@@ -1,5 +1,5 @@
 # Pooch registry files for McStas/McXtrace
-Trialing solution 2 for https://github.com/McStasMcXtrace/McCode/issues/1529
+Trialing solution 2 for https://github.com/mccode-dev/McCode/issues/1529
 
 
 ## Tips for local development
@@ -11,7 +11,7 @@ git clone https://github.com/g5t/mccode-pooch.git mccode_pooch
 Clone the McCode repository inside of this one, e.g.,
 ```bash
 cd mccode_pooch
-git clone https://github.com/McStasMcXtrace/McCode.git mccode
+git clone https://github.com/mccode-dev/McCode.git mccode
 ```
 
 Setup a local development environment
