@@ -12,7 +12,7 @@ def make_registries(repo, base, message):
     registries = {
         'mcstas': ('mcstas-comps',),
         'mcxtrace': ('mcxtrace-comps',),
-        'libc': ('common/lib/share', 'mcstas/nlib', 'mcxtrace/xlib'),
+        'libc': ('common/lib/share', 'mcstas/nlib', 'mcxtrace/xlib', 'mccode/nlib', 'mccode/xlib'),
     }
     for name, dirs in registries.items():
         registry_name = f'{name}-registry.txt'
