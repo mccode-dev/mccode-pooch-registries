@@ -2,12 +2,7 @@ name: 'Register files'
 on:
   workflow_dispatch:
   repository_dispatch:
-    types: [release, bugfix]
-  schedule:
-    - cron: '0 3 * * 1-5'
-  push:
-    branches:
-      - main
+    types: [update_tag]
 
 concurrency:
   group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
@@ -23,11 +18,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Clone mccode-dev/McCode
+      - name: Clone McCode
         uses: actions/checkout@v4
         with:
-          repository: mccode-dev/McCode
-          path: mccode
+          repository: mccode-dev/mccode
+          path: pusher
           fetch-depth: 0
           fetch-tags: true
 
@@ -44,5 +39,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Extract payload information
+        shell: bash
+        run: |
+          export REMOVE=${{ github.event.client_payload.remove }}
+          echo "REMOVE=${REMOVE:-0}" >> "${GITHUB_ENV}"
+          echo "TAG=${{ github.event.client_payload.tag }}" >> "${GITHUB_ENV}"
+
       - name: (Re)generate registry files
-        run: python make_registry_files.py
+        run: python register.py --parent pusher --remove ${{ env.REMOVE }} ${{ env.TAG }}
