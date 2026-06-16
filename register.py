@@ -1,4 +1,33 @@
 from pathlib import Path
+import json
+
+
+def load_tag_snapshots(repo_path: Path):
+    """Load tag→commit mappings for recovery."""
+    snapshot_file = repo_path / '.registry-tags.json'
+    if snapshot_file.exists():
+        with open(snapshot_file) as f:
+            return json.load(f)
+    return {}
+
+
+def save_tag_snapshots(repo_path: Path, snapshots: dict):
+    """Save tag→commit mappings for recovery."""
+    snapshot_file = repo_path / '.registry-tags.json'
+    with open(snapshot_file, 'w') as f:
+        json.dump(snapshots, f, indent=2)
+
+
+def restore_tag(repo, tag: str, commit_hash: str):
+    """Restore a tag to a previous commit (for recovery from failed rebuild)."""
+    try:
+        if tag in repo.tags:
+            repo.delete_tag(tag)
+        repo.create_tag(tag, ref=commit_hash)
+        print(f'Restored {tag} to {commit_hash[:8]}')
+    except Exception as e:
+        print(f'ERROR restoring {tag}: {e}')
+        raise
 
 
 def make_registry(base, dirs, output, recursive=True):
@@ -25,35 +54,77 @@ def make_registries(repo, base, message):
     repo.index.commit(message)
 
 
-def one_tag(repo, base, source, tag):
-    source_current = source.active_branch
-    repo_current = repo.active_branch
+def one_tag(repo, base, source, tag, rebuild=False):
+    old_commit = None
+    if rebuild and tag in repo.tags:
+        old_commit = str(repo.tags[str(tag)].commit)
+        repo.delete_tag(tag)
+        print(f'Deleted existing tag {tag} (was at {old_commit[:8]})')
+    
+    source_ref = source.head.commit
+    repo_ref = repo.head.commit
 
     source.git.checkout(tag)
     message = f'Add {tag} registries'
     make_registries(repo, base, message)
     repo.create_tag(tag, message=message)
-
-    source.git.checkout(source_current.name)
-    repo.git.checkout(repo_current.name)
+    
+    new_commit = str(repo.tags[str(tag)].commit)
+    
+    source.git.checkout(source_ref)
+    repo.git.checkout(repo_ref)
+    
+    return {'old': old_commit, 'new': new_commit}
 
 
 def v_tags(repo):
     return [tag for tag in repo.tags if str(tag).startswith('v')]
 
 
-def do_everything(repo, parent, source, tag: str):
-    source_tags = [tag] if tag else v_tags(source)
-    repo_tags =  v_tags(repo)
-    missing = [t for t in source_tags if t not in repo_tags]
-    # missing holds source-defined tag(s) that this repo does not have
-    for tag in missing:
-        print(f'Handle missing {tag=}')
-        one_tag(repo, parent, source, tag)
-    return len(missing) > 0
+def do_everything(repo, parent, source, tag: str, rebuild_all=False):
+    repo_path = Path(repo.working_dir)
+    
+    if rebuild_all:
+        repo_tags = v_tags(repo)
+        print(f'Rebuilding {len(repo_tags)} existing tags: {repo_tags}')
+        snapshots = load_tag_snapshots(repo_path)
+        
+        for t in repo_tags:
+            try:
+                print(f'Handle rebuild {t=}')
+                result = one_tag(repo, parent, source, str(t), rebuild=True)
+                
+                if str(t) not in snapshots:
+                    snapshots[str(t)] = []
+                snapshots[str(t)].append(result)
+                print(f'  → {result["old"][:8] if result["old"] else "new"} → {result["new"][:8]}')
+            except Exception as e:
+                print(f'  ERROR rebuilding {t}: {e}')
+                print(f'  Snapshot file saved for recovery at {snapshots}')
+                save_tag_snapshots(repo_path, snapshots)
+                raise
+        
+        save_tag_snapshots(repo_path, snapshots)
+        repo.git.add('.registry-tags.json')
+        return len(repo_tags) > 0
+    else:
+        source_tags = [tag] if tag else v_tags(source)
+        repo_tags = v_tags(repo)
+        missing = [t for t in source_tags if t not in repo_tags]
+        # missing holds source-defined tag(s) that this repo does not have
+        for tag in missing:
+            print(f'Handle missing {tag=}')
+            result = one_tag(repo, parent, source, tag)
+            snapshots = load_tag_snapshots(repo_path)
+            if tag not in snapshots:
+                snapshots[tag] = []
+            snapshots[tag].append(result)
+            save_tag_snapshots(repo_path, snapshots)
+            repo.git.add('.registry-tags.json')
+        return len(missing) > 0
 
 
-def main(parent: Path, push: bool, remove: bool, tag: str):
+def main(parent: Path, push: bool, remove: bool, tag: str, rebuild_all: bool):
     import git
     repo = git.Repo(Path(__file__).parent, search_parent_directories=False)
     changed = False
@@ -64,9 +135,19 @@ def main(parent: Path, push: bool, remove: bool, tag: str):
             repo.remote('origin').push(refspec=f':{tag}')
     elif not remove:
         source = git.Repo(parent, search_parent_directories=False)
-        if do_everything(repo, parent, source, tag) and push:
+        if do_everything(repo, parent, source, tag, rebuild_all=rebuild_all) and push:
             print(f'Push tags to origin')
-            repo.remote('origin').push(tags=True)
+            try:
+                repo.remote('origin').push(tags=True)
+            except git.GitCommandError as e:
+                if 'failed to push' in str(e).lower() or 'rejected' in str(e).lower():
+                    print(f'\nERROR: Push rejected (tags already exist on remote)')
+                    print(f'\nTo overwrite remote tags with updated ones, run:')
+                    print(f'  git push origin --force-with-lease --tags')
+                    print(f'\nOr to force unconditionally:')
+                    print(f'  git push origin --force --tags')
+                else:
+                    raise
         
 
 if __name__ == '__main__':
@@ -76,6 +157,7 @@ if __name__ == '__main__':
     parser.add_argument('-n', '--no-push', action='store_true', default=False)
     parser.add_argument('--parent', type=str, default=None, help='Parent repository directory to register')
     parser.add_argument('--remove', type=int, nargs='?', help='Remove the specified tag, otherwise add/update')
+    parser.add_argument('--rebuild-all', action='store_true', default=False, help='Rebuild all existing tags with current registry files')
     parser.add_argument('tag', type=str, nargs='?', help='Add/update/remove this tag, or Add missing tags if empty')
     args = parser.parse_args()
 
@@ -88,6 +170,9 @@ if __name__ == '__main__':
     remove = args.remove or 0
     if args.tag is None and remove != 0:
         raise ValueError(f'Non-zero {remove=} without a specified tag is not allowed')
+    
+    if args.rebuild_all and (args.tag or remove):
+        raise ValueError("--rebuild-all cannot be used with --remove or a specific tag")
 
-    main(parent=parent, push=not args.no_push, remove=remove, tag=args.tag or '')
+    main(parent=parent, push=not args.no_push, remove=remove, tag=args.tag or '', rebuild_all=args.rebuild_all)
     
