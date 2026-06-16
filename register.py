@@ -16,6 +16,7 @@ def make_registries(repo, base, message):
         'mcstas': ('mcstas-comps',),
         'mcxtrace': ('mcxtrace-comps',),
         'libc': ('common/lib/share', 'mcstas/nlib', 'mcxtrace/xlib', 'mccode/nlib', 'mccode/xlib'),
+        'codegen': ('mccode/src',),
     }
     for name, dirs in registries.items():
         registry_name = f'{name}-registry.txt'
