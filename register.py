@@ -1,6 +1,8 @@
 from pathlib import Path
 import json
 
+from mccode_antlr.cli.cache import cache_register
+
 
 def load_tag_snapshots(repo_path: Path):
     """Load tag→commit mappings for recovery."""
@@ -30,16 +32,6 @@ def restore_tag(repo, tag: str, commit_hash: str):
         raise
 
 
-def make_registry(base, dirs, output, recursive=True):
-    from pooch import file_hash
-    pat = '**/*' if recursive else '*'
-    hashes = {p.relative_to(base).as_posix(): file_hash(str(p)) for d in dirs for p in base.joinpath(d).glob(pat) if p.is_file()}
-    names = sorted(hashes.keys())
-    with open(output, 'w') as outfile:
-        for name in names:
-            outfile.write(f'{name} {hashes[name]}\n')
-
-
 def make_registries(repo, base, message):
     registries = {
         'mcstas': ('mcstas-comps',),
@@ -49,9 +41,25 @@ def make_registries(repo, base, message):
     }
     for name, dirs in registries.items():
         registry_name = f'{name}-registry.txt'
-        make_registry(base, dirs, registry_name)
+        # mccode-antlr owns this: it is the consumer of these registries, and it
+        # is the only thing that knows which files it generates and so must never
+        # be registered. Output is byte-identical to the hand-rolled version this
+        # replaced.
+        cache_register(root=str(base), dirs=list(dirs), out=registry_name)
         repo.git.add(registry_name)
     repo.index.commit(message)
+
+
+def head_ref(repo):
+    """HEAD as something `git checkout` can restore.
+
+    A branch name when HEAD is on one, otherwise the commit. Restoring the commit
+    alone -- which is what this used to do -- leaves the caller on a detached HEAD.
+    """
+    try:
+        return repo.active_branch.name
+    except TypeError:  # detached HEAD
+        return str(repo.head.commit)
 
 
 def one_tag(repo, base, source, tag, rebuild=False):
@@ -61,16 +69,32 @@ def one_tag(repo, base, source, tag, rebuild=False):
         repo.delete_tag(tag)
         print(f'Deleted existing tag {tag} (was at {old_commit[:8]})')
     
-    source_ref = source.head.commit
-    repo_ref = repo.head.commit
+    source_ref = head_ref(source)
+    repo_ref = head_ref(repo)
 
-    source.git.checkout(tag)
+    # Commit the registries onto a detached HEAD so that whatever branch the
+    # caller was on does not move. index.commit() advances HEAD's branch, so
+    # without this the first tag processed drags the branch along with it and
+    # every later tag -- which lands on the detached HEAD left behind by the old
+    # `checkout(repo.head.commit)` -- does not. The commit is not orphaned: the
+    # tag created just below points at it.
+    repo.git.checkout('--detach')
+
+    # Check out *and clean*. A plain checkout leaves untracked files in place, so
+    # anything a previous run (or a stray tool invocation) dropped into the source
+    # tree gets hashed into the registry and stays there for every later tag. That
+    # is how mcstas-comps/optics/Collimator_linear.comp.json -- an mccode-antlr IR
+    # sidecar that exists in no McCode commit -- ended up in 101 published tags.
+    source.git.checkout(tag, force=True)
+    source.git.clean('-xdf')
     message = f'Add {tag} registries'
     make_registries(repo, base, message)
     repo.create_tag(tag, message=message)
     
     new_commit = str(repo.tags[str(tag)].commit)
     
+    # Back to the branch, by name. Everything is committed at this point, so the
+    # checkout is clean even though the registry files differ between the two.
     source.git.checkout(source_ref)
     repo.git.checkout(repo_ref)
     
@@ -81,11 +105,18 @@ def v_tags(repo):
     return [tag for tag in repo.tags if str(tag).startswith('v')]
 
 
-def do_everything(repo, parent, source, tag: str, rebuild_all=False):
+def do_everything(repo, parent, source, tag: str, rebuild_all=False, rebuild_tags=None):
     repo_path = Path(repo.working_dir)
     
-    if rebuild_all:
-        repo_tags = v_tags(repo)
+    if rebuild_all or rebuild_tags:
+        if rebuild_all:
+            repo_tags = v_tags(repo)
+        else:
+            known = {str(t) for t in v_tags(repo)}
+            unknown = [t for t in rebuild_tags if t not in known]
+            if unknown:
+                raise ValueError(f'Cannot rebuild tags this repository does not have: {unknown}')
+            repo_tags = list(rebuild_tags)
         print(f'Rebuilding {len(repo_tags)} existing tags: {repo_tags}')
         snapshots = load_tag_snapshots(repo_path)
         
@@ -124,7 +155,7 @@ def do_everything(repo, parent, source, tag: str, rebuild_all=False):
         return len(missing) > 0
 
 
-def main(parent: Path, push: bool, remove: bool, tag: str, rebuild_all: bool):
+def main(parent: Path, push: bool, remove: bool, tag: str, rebuild_all: bool, rebuild_tags=None):
     import git
     repo = git.Repo(Path(__file__).parent, search_parent_directories=False)
     changed = False
@@ -135,7 +166,8 @@ def main(parent: Path, push: bool, remove: bool, tag: str, rebuild_all: bool):
             repo.remote('origin').push(refspec=f':{tag}')
     elif not remove:
         source = git.Repo(parent, search_parent_directories=False)
-        if do_everything(repo, parent, source, tag, rebuild_all=rebuild_all) and push:
+        if do_everything(repo, parent, source, tag, rebuild_all=rebuild_all,
+                         rebuild_tags=rebuild_tags) and push:
             print(f'Push tags to origin')
             try:
                 repo.remote('origin').push(tags=True)
@@ -158,6 +190,12 @@ if __name__ == '__main__':
     parser.add_argument('--parent', type=str, default=None, help='Parent repository directory to register')
     parser.add_argument('--remove', type=int, nargs='?', help='Remove the specified tag, otherwise add/update')
     parser.add_argument('--rebuild-all', action='store_true', default=False, help='Rebuild all existing tags with current registry files')
+    parser.add_argument('--rebuild', action='append', default=None, metavar='TAG',
+                        help='Rebuild this existing tag (repeatable). Unlike the positional '
+                             'tag, which only adds tags this repository lacks, this re-mints '
+                             'a tag that already exists.')
+    parser.add_argument('--rebuild-from-file', type=str, default=None, metavar='FILE',
+                        help='Rebuild every tag named in FILE, one per line (combines with --rebuild)')
     parser.add_argument('tag', type=str, nargs='?', help='Add/update/remove this tag, or Add missing tags if empty')
     args = parser.parse_args()
 
@@ -174,5 +212,14 @@ if __name__ == '__main__':
     if args.rebuild_all and (args.tag or remove):
         raise ValueError("--rebuild-all cannot be used with --remove or a specific tag")
 
-    main(parent=parent, push=not args.no_push, remove=remove, tag=args.tag or '', rebuild_all=args.rebuild_all)
+    rebuild_tags = list(args.rebuild or [])
+    if args.rebuild_from_file:
+        listed = Path(args.rebuild_from_file).read_text().split()
+        rebuild_tags.extend(t for t in listed if t not in rebuild_tags)
+    if rebuild_tags and (args.rebuild_all or args.tag or remove):
+        raise ValueError("--rebuild/--rebuild-from-file cannot be combined with "
+                         "--rebuild-all, --remove or a positional tag")
+
+    main(parent=parent, push=not args.no_push, remove=remove, tag=args.tag or '',
+         rebuild_all=args.rebuild_all, rebuild_tags=rebuild_tags)
     

@@ -1,2 +1,9 @@
 gitpython
 pooch
+# Mints the registry files (see register.py). Pinned deliberately: mccode-antlr
+# is the consumer of these registries, so a bad release must not be able to
+# quietly change what gets minted. 0.30.0 is the first release carrying the
+# IR-sidecar filter that keeps generated files out of a registry -- without it a
+# mint from a tree someone has parsed in can republish the same kind of phantom
+# entry this repository was just cleaned of.
+mccode-antlr>=0.30.0
