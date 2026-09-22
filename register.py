@@ -50,6 +50,18 @@ def make_registries(repo, base, message):
     repo.index.commit(message)
 
 
+def head_ref(repo):
+    """HEAD as something `git checkout` can restore.
+
+    A branch name when HEAD is on one, otherwise the commit. Restoring the commit
+    alone -- which is what this used to do -- leaves the caller on a detached HEAD.
+    """
+    try:
+        return repo.active_branch.name
+    except TypeError:  # detached HEAD
+        return str(repo.head.commit)
+
+
 def one_tag(repo, base, source, tag, rebuild=False):
     old_commit = None
     if rebuild and tag in repo.tags:
@@ -57,8 +69,16 @@ def one_tag(repo, base, source, tag, rebuild=False):
         repo.delete_tag(tag)
         print(f'Deleted existing tag {tag} (was at {old_commit[:8]})')
     
-    source_ref = source.head.commit
-    repo_ref = repo.head.commit
+    source_ref = head_ref(source)
+    repo_ref = head_ref(repo)
+
+    # Commit the registries onto a detached HEAD so that whatever branch the
+    # caller was on does not move. index.commit() advances HEAD's branch, so
+    # without this the first tag processed drags the branch along with it and
+    # every later tag -- which lands on the detached HEAD left behind by the old
+    # `checkout(repo.head.commit)` -- does not. The commit is not orphaned: the
+    # tag created just below points at it.
+    repo.git.checkout('--detach')
 
     # Check out *and clean*. A plain checkout leaves untracked files in place, so
     # anything a previous run (or a stray tool invocation) dropped into the source
@@ -73,6 +93,8 @@ def one_tag(repo, base, source, tag, rebuild=False):
     
     new_commit = str(repo.tags[str(tag)].commit)
     
+    # Back to the branch, by name. Everything is committed at this point, so the
+    # checkout is clean even though the registry files differ between the two.
     source.git.checkout(source_ref)
     repo.git.checkout(repo_ref)
     
